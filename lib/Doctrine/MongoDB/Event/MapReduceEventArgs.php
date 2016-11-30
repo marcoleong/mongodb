@@ -46,7 +46,7 @@ class MapReduceEventArgs extends BaseEventArgs
      * @param array             $query
      * @param array             $options
      */
-    public function __construct($invoker, $map, $reduce, array $out, array $query, array $options = array())
+    public function __construct($invoker, $map, $reduce, array $out, array $query, array $options = [])
     {
         $this->invoker = $invoker;
         $this->map = $map;
@@ -56,33 +56,96 @@ class MapReduceEventArgs extends BaseEventArgs
         $this->options = $options;
     }
 
+    /**
+     * @return object
+     */
     public function getInvoker()
     {
         return $this->invoker;
     }
 
+    /**
+     * @return \MongoCode|string
+     */
     public function getMap()
     {
         return $this->map;
     }
 
+    /**
+     * @return \MongoCode|string
+     */
     public function getReduce()
     {
         return $this->reduce;
     }
 
+    /**
+     * @return array
+     */
     public function getOut()
     {
         return $this->out;
     }
 
+    /**
+     * @return array
+     */
     public function getQuery()
     {
         return $this->query;
     }
 
+    /**
+     * @return array
+     */
     public function getOptions()
     {
         return $this->options;
+    }
+
+    /**
+     * @param array $query
+     * @since 1.3
+     */
+    public function setQuery(array $query)
+    {
+        $this->query = $query;
+    }
+
+    /**
+     * @param $map
+     * @since 1.3
+     */
+    public function setMap($map)
+    {
+        $this->map = $map;
+    }
+
+    /**
+     * @param $reduce
+     * @since 1.3
+     */
+    public function setReduce($reduce)
+    {
+        $this->reduce = $reduce;
+    }
+
+    /**
+     * @param array $out
+     * @since 1.3
+     */
+    public function setOut(array $out)
+    {
+        $this->out = $out;
+    }
+
+    /**
+     * @param array $options
+     * @since 1.3
+     */
+    public function setOptions(array $options)
+    {
+        $this->options = $options;
     }
 }

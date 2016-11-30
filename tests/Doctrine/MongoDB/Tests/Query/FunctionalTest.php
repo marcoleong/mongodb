@@ -16,9 +16,9 @@ class FunctionalTest extends BaseTest
             ->distinct('count')
             ->field('username')->equals('distinct_test');
 
-        $expected = array(
+        $expected = [
             'username' => 'distinct_test'
-        );
+        ];
         $query = $qb->getQuery();
         $this->assertInstanceOf('Doctrine\MongoDB\Query\Query', $query);
         $this->assertEquals(Query::TYPE_DISTINCT, $query->getType());
@@ -33,9 +33,9 @@ class FunctionalTest extends BaseTest
             ->field('username')->equals('jwage');
 
         $this->assertEquals(Query::TYPE_FIND_AND_REMOVE, $qb->getType());
-        $expected = array(
+        $expected = [
             'username' => 'jwage'
-        );
+        ];
         $this->assertEquals($expected, $qb->getQueryArray());
         $this->assertNull($qb->getQuery()->execute());
     }
@@ -43,36 +43,37 @@ class FunctionalTest extends BaseTest
     public function testFindAndUpdateQuery()
     {
         $qb = $this->getTestQueryBuilder()
-            ->findAndRemove()
-            ->field('username')->equals('jwage');
+            ->findAndUpdate()
+            ->field('username')->equals('jwage')
+            ->field('writes')->inc(1);
 
-        $this->assertEquals(Query::TYPE_FIND_AND_REMOVE, $qb->getType());
-        $expected = array(
+        $this->assertEquals(Query::TYPE_FIND_AND_UPDATE, $qb->getType());
+        $expected = [
             'username' => 'jwage'
-        );
+        ];
         $this->assertEquals($expected, $qb->getQueryArray());
 
         $query = $qb->getQuery();
-        $this->assertEquals(Query::TYPE_FIND_AND_REMOVE, $query->getType());
+        $this->assertEquals(Query::TYPE_FIND_AND_UPDATE, $query->getType());
         $this->assertNull($query->execute());
     }
 
     public function testGroupQueryWithSingleMethod()
     {
-        $keys = array();
-        $initial = array('count' => 0, 'sum' => 0);
+        $keys = [];
+        $initial = ['count' => 0, 'sum' => 0];
         $reduce = 'function(obj, prev) { prev.count++; prev.sum += obj.a; }';
         $finalize = 'function(obj) { if (obj.count) { obj.avg = obj.sum / obj.count; } else { obj.avg = 0; } }';
 
         $qb = $this->getTestQueryBuilder()
-            ->group($keys, $initial, $reduce, array('finalize' => $finalize));
+            ->group($keys, $initial, $reduce, ['finalize' => $finalize]);
 
-        $expected = array(
+        $expected = [
             'keys' => $keys,
             'initial' => $initial,
             'reduce' => $reduce,
-            'options' => array('finalize' => $finalize),
-        );
+            'options' => ['finalize' => $finalize],
+        ];
 
         $this->assertEquals(Query::TYPE_GROUP, $qb->getType());
         $this->assertEquals($expected, $qb->debug('group'));
@@ -81,8 +82,8 @@ class FunctionalTest extends BaseTest
 
     public function testGroupQueryWithMultipleMethods()
     {
-        $keys = array();
-        $initial = array('count' => 0, 'sum' => 0);
+        $keys = [];
+        $initial = ['count' => 0, 'sum' => 0];
         $reduce = 'function(obj, prev) { prev.count++; prev.sum += obj.a; }';
         $finalize = 'function(obj) { if (obj.count) { obj.avg = obj.sum / obj.count; } else { obj.avg = 0; } }';
 
@@ -91,12 +92,12 @@ class FunctionalTest extends BaseTest
             ->reduce($reduce)
             ->finalize($finalize);
 
-        $expected = array(
+        $expected = [
             'keys' => $keys,
             'initial' => $initial,
             'reduce' => $reduce,
-            'options' => array('finalize' => $finalize),
-        );
+            'options' => ['finalize' => $finalize],
+        ];
 
         $this->assertEquals(Query::TYPE_GROUP, $qb->getType());
         $this->assertEquals($expected, $qb->debug('group'));
@@ -109,12 +110,12 @@ class FunctionalTest extends BaseTest
             ->insert()
             ->field('username')->set('jwage');
 
-        $expected = array(
+        $expected = [
             'username' => 'jwage'
-        );
+        ];
         $this->assertEquals($expected, $qb->getNewObj());
         $this->assertEquals(Query::TYPE_INSERT, $qb->getType());
-        $this->assertArrayHasKeyValue(array('ok' => 1), $qb->getQuery()->execute());
+        $this->assertArrayHasKeyValue(['ok' => 1], $qb->getQuery()->execute());
     }
 
     public function testUpdateQuery()
@@ -123,17 +124,17 @@ class FunctionalTest extends BaseTest
             ->update()
             ->field('username')->set('jwage');
 
-        $expected = array(
-            '$set' => array(
+        $expected = [
+            '$set' => [
                 'username' => 'jwage'
-            )
-        );
+            ]
+        ];
         $this->assertEquals($expected, $qb->getNewObj());
         $this->assertEquals(Query::TYPE_UPDATE, $qb->getType());
 
         $query = $qb->getQuery();
         $this->assertEquals(Query::TYPE_UPDATE, $query->getType());
-        $this->assertArrayHasKeyValue(array('ok' => 1), $query->execute());
+        $this->assertArrayHasKeyValue(['ok' => 1], $query->execute());
     }
 
     public function testRemoveQuery()
@@ -143,7 +144,45 @@ class FunctionalTest extends BaseTest
             ->field('username')->equals('jwage');
 
         $this->assertEquals(Query::TYPE_REMOVE, $qb->getType());
-        $this->assertArrayHasKeyValue(array('ok' => 1), $qb->getQuery()->execute());
+        $this->assertArrayHasKeyValue(['ok' => 1], $qb->getQuery()->execute());
+    }
+
+    public function testUpsertQuery()
+    {
+        $qb = $this->getTestQueryBuilder()
+            ->update()
+            ->upsert()
+            ->field('username')->equals('alcaeus')
+            ->field('writes')->inc(1)
+            ->field('insertValue')->setOnInsert(1);
+
+        $this->assertEquals(Query::TYPE_UPDATE, $qb->getType());
+        $this->assertTrue($qb->debug('upsert'));
+
+        $qb->getQuery()->execute();
+
+        $document = $this->getTestQueryBuilder()
+            ->field('username')->equals('alcaeus')
+            ->getQuery()->getSingleResult();
+
+        $this->assertArrayHasKeyValue(['username' => 'alcaeus'], $document);
+        $this->assertArrayHasKeyValue(['writes' => 1], $document);
+        $this->assertArrayHasKeyValue(['insertValue' => 1], $document);
+
+        $qb = $this->getTestQueryBuilder()
+            ->update()
+            ->upsert()
+            ->field('_id')->equals($document['_id'])
+            ->field('writes')->inc(1)
+            ->field('insertValue')->setOnInsert(2);
+
+        $qb->getQuery()->execute();
+        $document = $this->getTestQueryBuilder()
+            ->field('username')->equals('alcaeus')
+            ->getQuery()->getSingleResult();
+
+        $this->assertArrayHasKeyValue(['writes' => 2], $document);
+        $this->assertArrayHasKeyValue(['insertValue' => 1], $document);
     }
 
     private function getTestQueryBuilder()

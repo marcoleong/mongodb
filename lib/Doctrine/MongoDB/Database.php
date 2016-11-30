@@ -23,7 +23,6 @@ use Doctrine\Common\EventManager;
 use Doctrine\MongoDB\Event\CreateCollectionEventArgs;
 use Doctrine\MongoDB\Event\EventArgs;
 use Doctrine\MongoDB\Event\MutableEventArgs;
-use Doctrine\MongoDB\Util\ReadPreference;
 
 /**
  * Wrapper for the MongoDB class.
@@ -97,13 +96,21 @@ class Database
      * Wrapper method for MongoDB::command().
      *
      * @see http://php.net/manual/en/mongodb.command.php
-     * @param array $data
-     * @param array $options
+     * @param array  $command Command document
+     * @param array  $options Client-side options (e.g. socket timeout)
+     * @param string $hash    Optional reference argument to collect the server
+     *                        hash for command cursors (for driver 1.5+ only)
      * @return array
      */
-    public function command(array $data, array $options = array())
+    public function command(array $command, array $options = [], &$hash = null)
     {
-        return $this->mongoDB->command($data, $options);
+        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+
+        if (func_num_args() > 2) {
+            return $this->mongoDB->command($command, $options, $hash);
+        }
+
+        return $this->mongoDB->command($command, $options);
     }
 
     /**
@@ -125,8 +132,8 @@ class Database
     public function createCollection($name, $cappedOrOptions = false, $size = 0, $max = 0)
     {
         $options = is_array($cappedOrOptions)
-            ? array_merge(array('capped' => false, 'size' => 0, 'max' => 0), $cappedOrOptions)
-            : array('capped' => $cappedOrOptions, 'size' => $size, 'max' => $max);
+            ? array_merge(['capped' => false, 'size' => 0, 'max' => 0], $cappedOrOptions)
+            : ['capped' => $cappedOrOptions, 'size' => $size, 'max' => $max];
 
         $options['capped'] = (boolean) $options['capped'];
         $options['size'] = (integer) $options['size'];
@@ -199,7 +206,7 @@ class Database
      * @see http://php.net/manual/en/mongodb.execute.php
      * @return array
      */
-    public function execute($code, array $args = array())
+    public function execute($code, array $args = [])
     {
         return $this->mongoDB->execute($code, $args);
     }
@@ -330,7 +337,7 @@ class Database
      */
     public function getReadPreference()
     {
-        return ReadPreference::convertReadPreference($this->mongoDB->getReadPreference());
+        return $this->mongoDB->getReadPreference();
     }
 
     /**
@@ -363,10 +370,6 @@ class Database
      */
     public function getSlaveOkay()
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            return $this->mongoDB->getSlaveOkay();
-        }
-
         $readPref = $this->getReadPreference();
 
         return \MongoClient::RP_PRIMARY !== $readPref['type'];
@@ -386,16 +389,12 @@ class Database
      */
     public function setSlaveOkay($ok = true)
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            return $this->mongoDB->setSlaveOkay($ok);
-        }
-
         $prevSlaveOkay = $this->getSlaveOkay();
 
         if ($ok) {
             // Preserve existing tags for non-primary read preferences
             $readPref = $this->getReadPreference();
-            $tags = ! empty($readPref['tagsets']) ? $readPref['tagsets'] : array();
+            $tags = ! empty($readPref['tagsets']) ? $readPref['tagsets'] : [];
             $this->mongoDB->setReadPreference(\MongoClient::RP_SECONDARY_PREFERRED, $tags);
         } else {
             $this->mongoDB->setReadPreference(\MongoClient::RP_PRIMARY);
@@ -536,11 +535,7 @@ class Database
      */
     protected function doCreateCollection($name, array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.4.0', '>=')) {
-            $this->mongoDB->createCollection($name, $options);
-        } else {
-            $this->mongoDB->createCollection($name, $options['capped'], $options['size'], $options['max']);
-        }
+        $this->mongoDB->createCollection($name, $options);
 
         return $this->doSelectCollection($name);
     }
@@ -604,5 +599,22 @@ class Database
                 }
             }
         }
+    }
+
+    /**
+     * Convert "timeout" write option to "socketTimeoutMS" for driver version
+     * 1.5.0+.
+     *
+     * @param array $options
+     * @return array
+     */
+    protected function convertSocketTimeout(array $options)
+    {
+        if (isset($options['timeout']) && ! isset($options['socketTimeoutMS'])) {
+            $options['socketTimeoutMS'] = $options['timeout'];
+            unset($options['timeout']);
+        }
+
+        return $options;
     }
 }

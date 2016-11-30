@@ -30,8 +30,9 @@ use Doctrine\MongoDB\Event\MutableEventArgs;
 use Doctrine\MongoDB\Event\NearEventArgs;
 use Doctrine\MongoDB\Event\UpdateEventArgs;
 use Doctrine\MongoDB\Exception\ResultException;
-use Doctrine\MongoDB\Util\ReadPreference;
 use GeoJson\Geometry\Point;
+use BadMethodCallException;
+use MongoCommandCursor;
 
 /**
  * Wrapper for the MongoCollection class.
@@ -91,14 +92,22 @@ class Collection
      *
      * This method will dispatch preAggregate and postAggregate events.
      *
+     * By default, the results from a non-cursor aggregate command will be
+     * returned as an ArrayIterator; however, if the pipeline ends in an $out
+     * operator, a cursor on the output collection will be returned instead.
+     *
+     * If the "cursor" option is true or an array, a command cursor will be
+     * returned (requires driver >= 1.5.0 and MongoDB >= 2.6).
+     *
      * @see http://php.net/manual/en/mongocollection.aggregate.php
      * @see http://docs.mongodb.org/manual/reference/command/aggregate/
      * @param array $pipeline Array of pipeline operators, or the first operator
+     * @param array $options  Command options (if $pipeline was an array of pipeline operators)
      * @param array $op,...   Additional operators (if $pipeline was the first)
-     * @return ArrayIterator
+     * @return Iterator
      * @throws ResultException if the command fails
      */
-    public function aggregate(array $pipeline /* , array $op, ... */)
+    public function aggregate(array $pipeline, array $options = [] /* , array $op, ... */)
     {
         /* If the single array argument contains a zeroth index, consider it an
          * array of pipeline operators. Otherwise, assume that each argument is
@@ -106,13 +115,17 @@ class Collection
          */
         if ( ! array_key_exists(0, $pipeline)) {
             $pipeline = func_get_args();
+            $options = [];
         }
 
         if ($this->eventManager->hasListeners(Events::preAggregate)) {
-            $this->eventManager->dispatchEvent(Events::preAggregate, new AggregateEventArgs($this, $pipeline));
+            $aggregateEventArgs = new AggregateEventArgs($this, $pipeline, $options);
+            $this->eventManager->dispatchEvent(Events::preAggregate, $aggregateEventArgs);
+            $pipeline = $aggregateEventArgs->getPipeline();
+            $options = $aggregateEventArgs->getOptions();
         }
 
-        $result = $this->doAggregate($pipeline);
+        $result = $this->doAggregate($pipeline, $options);
 
         if ($this->eventManager->hasListeners(Events::postAggregate)) {
             $eventArgs = new MutableEventArgs($this, $result);
@@ -133,10 +146,13 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function batchInsert(array &$a, array $options = array())
+    public function batchInsert(array &$a, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preBatchInsert)) {
-            $this->eventManager->dispatchEvent(Events::preBatchInsert, new EventArgs($this, $a, $options));
+            $eventArgs = new EventArgs($this, $a, $options);
+            $this->eventManager->dispatchEvent(Events::preBatchInsert, $eventArgs);
+            $a = $eventArgs->getData();
+            $options = $eventArgs->getOptions();
         }
 
         $result = $this->doBatchInsert($a, $options);
@@ -155,17 +171,31 @@ class Collection
      *
      * @see http://php.net/manual/en/mongocollection.count.php
      * @see http://docs.mongodb.org/manual/reference/command/count/
-     * @param array   $query
-     * @param integer $limit
-     * @param integer $skip
+     * @param array         $query
+     * @param integer|array $limitOrOptions Limit or options array
+     * @param integer       $skip
      * @return integer
      */
-    public function count(array $query = array(), $limit = 0, $skip = 0)
+    public function count(array $query = [], $limitOrOptions = 0, $skip = 0)
     {
-        $mongoCollection = $this->mongoCollection;
-        return $this->retry(function() use ($mongoCollection, $query, $limit, $skip) {
-            return $mongoCollection->count($query, $limit, $skip);
-        });
+        $options = is_array($limitOrOptions)
+            ? array_merge(['limit' => 0, 'skip' => 0], $limitOrOptions)
+            : ['limit' => $limitOrOptions, 'skip' => $skip];
+
+        $options['limit'] = (integer) $options['limit'];
+        $options['skip'] = (integer) $options['skip'];
+
+        return $this->doCount($query, $options);
+    }
+
+    /**
+     * Creates a new aggregation builder instance.
+     *
+     * @return Aggregation\Builder
+     */
+    public function createAggregationBuilder()
+    {
+        return new Aggregation\Builder($this);
     }
 
     /**
@@ -226,13 +256,16 @@ class Collection
      * @return ArrayIterator
      * @throws ResultException if the command fails
      */
-    public function distinct($field, array $query = array(), array $options = array())
+    public function distinct($field, array $query = [], array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preDistinct)) {
             /* The distinct command currently does not have options beyond field
              * and query, so do not include it in the event args.
              */
-            $this->eventManager->dispatchEvent(Events::preDistinct, new DistinctEventArgs($this, $field, $query));
+            $distinctEventArgs = new DistinctEventArgs($this, $field, $query);
+            $this->eventManager->dispatchEvent(Events::preDistinct, $distinctEventArgs);
+            $query = $distinctEventArgs->getQuery();
+            $field = $distinctEventArgs->getField();
         }
 
         $result = $this->doDistinct($field, $query, $options);
@@ -278,7 +311,7 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function ensureIndex(array $keys, array $options = array())
+    public function ensureIndex(array $keys, array $options = [])
     {
         $options = isset($options['safe']) ? $this->convertWriteConcern($options) : $options;
         $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
@@ -297,10 +330,13 @@ class Collection
      * @param array $fields
      * @return Cursor
      */
-    public function find(array $query = array(), array $fields = array())
+    public function find(array $query = [], array $fields = [])
     {
         if ($this->eventManager->hasListeners(Events::preFind)) {
-            $this->eventManager->dispatchEvent(Events::preFind, new FindEventArgs($this, $query, $fields));
+            $findEventArgs = new FindEventArgs($this, $query, $fields);
+            $this->eventManager->dispatchEvent(Events::preFind, $findEventArgs);
+            $query = $findEventArgs->getQuery();
+            $fields = $findEventArgs->getFields();
         }
 
         $result = $this->doFind($query, $fields);
@@ -325,10 +361,13 @@ class Collection
      * @return array|null
      * @throws ResultException if the command fails
      */
-    public function findAndRemove(array $query, array $options = array())
+    public function findAndRemove(array $query, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preFindAndRemove)) {
-            $this->eventManager->dispatchEvent(Events::preFindAndRemove, new EventArgs($this, $query, $options));
+            $eventArgs = new MutableEventArgs($this, $query, $options);
+            $this->eventManager->dispatchEvent(Events::preFindAndRemove, $eventArgs);
+            $query = $eventArgs->getData();
+            $options = $eventArgs->getOptions();
         }
 
         $result = $this->doFindAndRemove($query, $options);
@@ -354,10 +393,14 @@ class Collection
      * @return array|null
      * @throws ResultException if the command fails
      */
-    public function findAndUpdate(array $query, array $newObj, array $options = array())
+    public function findAndUpdate(array $query, array $newObj, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preFindAndUpdate)) {
-            $this->eventManager->dispatchEvent(Events::preFindAndUpdate, new UpdateEventArgs($this, $query, $newObj, $options));
+            $updateEventArgs = new UpdateEventArgs($this, $query, $newObj, $options);
+            $this->eventManager->dispatchEvent(Events::preFindAndUpdate, $updateEventArgs);
+            $query = $updateEventArgs->getQuery();
+            $newObj = $updateEventArgs->getNewObj();
+            $options = $updateEventArgs->getOptions();
         }
 
         $result = $this->doFindAndUpdate($query, $newObj, $options);
@@ -381,10 +424,13 @@ class Collection
      * @param array $fields
      * @return array|null
      */
-    public function findOne(array $query = array(), array $fields = array())
+    public function findOne(array $query = [], array $fields = [])
     {
         if ($this->eventManager->hasListeners(Events::preFindOne)) {
-            $this->eventManager->dispatchEvent(Events::preFindOne, new FindEventArgs($this, $query, $fields));
+            $findEventArgs = new FindEventArgs($this, $query, $fields);
+            $this->eventManager->dispatchEvent(Events::preFindOne, $findEventArgs);
+            $query = $findEventArgs->getQuery();
+            $fields = $findEventArgs->getFields();
         }
 
         $result = $this->doFindOne($query, $fields);
@@ -420,7 +466,9 @@ class Collection
     public function getDBRef(array $reference)
     {
         if ($this->eventManager->hasListeners(Events::preGetDBRef)) {
-            $this->eventManager->dispatchEvent(Events::preGetDBRef, new EventArgs($this, $reference));
+            $eventArgs = new EventArgs($this, $reference);
+            $this->eventManager->dispatchEvent(Events::preGetDBRef, $eventArgs);
+            $reference = $eventArgs->getData();
         }
 
         $result = $this->doGetDBRef($reference);
@@ -477,7 +525,7 @@ class Collection
      */
     public function getReadPreference()
     {
-        return ReadPreference::convertReadPreference($this->mongoCollection->getReadPreference());
+        return $this->mongoCollection->getReadPreference();
     }
 
     /**
@@ -510,10 +558,6 @@ class Collection
      */
     public function getSlaveOkay()
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            return $this->mongoCollection->getSlaveOkay();
-        }
-
         $readPref = $this->getReadPreference();
 
         return \MongoClient::RP_PRIMARY !== $readPref['type'];
@@ -533,16 +577,12 @@ class Collection
      */
     public function setSlaveOkay($ok = true)
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            return $this->mongoCollection->setSlaveOkay($ok);
-        }
-
         $prevSlaveOkay = $this->getSlaveOkay();
 
         if ($ok) {
             // Preserve existing tags for non-primary read preferences
             $readPref = $this->getReadPreference();
-            $tags = ! empty($readPref['tagsets']) ? $readPref['tagsets'] : array();
+            $tags = ! empty($readPref['tagsets']) ? $readPref['tagsets'] : [];
             $this->mongoCollection->setReadPreference(\MongoClient::RP_SECONDARY_PREFERRED, $tags);
         } else {
             $this->mongoCollection->setReadPreference(\MongoClient::RP_PRIMARY);
@@ -565,10 +605,15 @@ class Collection
      * @return ArrayIterator
      * @throws ResultException if the command fails
      */
-    public function group($keys, array $initial, $reduce, array $options = array())
+    public function group($keys, array $initial, $reduce, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preGroup)) {
-            $this->eventManager->dispatchEvent(Events::preGroup, new GroupEventArgs($this, $keys, $initial, $reduce, $options));
+            $groupEventArgs = new GroupEventArgs($this, $keys, $initial, $reduce, $options);
+            $this->eventManager->dispatchEvent(Events::preGroup, $groupEventArgs);
+            $keys = $groupEventArgs->getKeys();
+            $initial = $groupEventArgs->getInitial();
+            $reduce = $groupEventArgs->getReduce();
+            $options = $groupEventArgs->getOptions();
         }
 
         $result = $this->doGroup($keys, $initial, $reduce, $options);
@@ -592,10 +637,13 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function insert(array &$a, array $options = array())
+    public function insert(array &$a, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preInsert)) {
-            $this->eventManager->dispatchEvent(Events::preInsert, new EventArgs($this, $a, $options));
+            $eventArgs = new EventArgs($this, $a, $options);
+            $this->eventManager->dispatchEvent(Events::preInsert, $eventArgs);
+            $a = $eventArgs->getData();
+            $options = $eventArgs->getOptions();
         }
 
         $result = $this->doInsert($a, $options);
@@ -643,10 +691,16 @@ class Collection
      * @return ArrayIterator|Cursor
      * @throws ResultException if the command fails
      */
-    public function mapReduce($map, $reduce, $out = array('inline' => true), array $query = array(), array $options = array())
+    public function mapReduce($map, $reduce, $out = ['inline' => true], array $query = [], array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preMapReduce)) {
-            $this->eventManager->dispatchEvent(Events::preMapReduce, new MapReduceEventArgs($this, $map, $reduce, $out, $query, $options));
+            $mapReduceEventArgs = new MapReduceEventArgs($this, $map, $reduce, $out, $query, $options);
+            $this->eventManager->dispatchEvent(Events::preMapReduce, $mapReduceEventArgs);
+            $map = $mapReduceEventArgs->getMap();
+            $reduce = $mapReduceEventArgs->getReduce();
+            $out = $mapReduceEventArgs->getOut();
+            $query = $mapReduceEventArgs->getQuery();
+            $options = $mapReduceEventArgs->getOptions();
         }
 
         $result = $this->doMapReduce($map, $reduce, $out, $query, $options);
@@ -678,10 +732,14 @@ class Collection
      * @return ArrayIterator
      * @throws ResultException if the command fails
      */
-    public function near($near, array $query = array(), array $options = array())
+    public function near($near, array $query = [], array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preNear)) {
-            $this->eventManager->dispatchEvent(Events::preNear, new NearEventArgs($this, $query, $near, $options));
+            $nearEventArgs = new NearEventArgs($this, $query, $near, $options);
+            $this->eventManager->dispatchEvent(Events::preNear, $nearEventArgs);
+            $query = $nearEventArgs->getQuery();
+            $near = $nearEventArgs->getNear();
+            $options = $nearEventArgs->getOptions();
         }
 
         $result = $this->doNear($near, $query, $options);
@@ -696,6 +754,24 @@ class Collection
     }
 
     /**
+     * Wrapper method for MongoCollection::parallelCollectionScan()
+     *
+     * @param int $numCursors
+     * @return CommandCursor[]
+     *
+     * @throws BadMethodCallException if MongoCollection::parallelCollectionScan() is not available
+     */
+    public function parallelCollectionScan($numCursors)
+    {
+        $mongoCollection = $this->mongoCollection;
+        $commandCursors = $this->retry(function() use ($mongoCollection, $numCursors) {
+            return $mongoCollection->parallelCollectionScan($numCursors);
+        });
+
+        return array_map([$this, 'wrapCommandCursor'], $commandCursors);
+    }
+
+    /**
      * Wrapper method for MongoCollection::remove().
      *
      * This method will dispatch preRemove and postRemove events.
@@ -705,16 +781,21 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function remove(array $query, array $options = array())
+    public function remove(array $query, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preRemove)) {
-            $this->eventManager->dispatchEvent(Events::preRemove, new EventArgs($this, $query, $options));
+            $eventArgs = new MutableEventArgs($this, $query, $options);
+            $this->eventManager->dispatchEvent(Events::preRemove, $eventArgs);
+            $query = $eventArgs->getData();
+            $options = $eventArgs->getOptions();
         }
 
         $result = $this->doRemove($query, $options);
 
         if ($this->eventManager->hasListeners(Events::postRemove)) {
-            $this->eventManager->dispatchEvent(Events::postRemove, new EventArgs($this, $result));
+            $eventArgs = new MutableEventArgs($this, $result);
+            $this->eventManager->dispatchEvent(Events::postRemove, $eventArgs);
+            $result = $eventArgs->getData();
         }
 
         return $result;
@@ -730,10 +811,13 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function save(array &$a, array $options = array())
+    public function save(array &$a, array $options = [])
     {
         if ($this->eventManager->hasListeners(Events::preSave)) {
-            $this->eventManager->dispatchEvent(Events::preSave, new EventArgs($this, $a, $options));
+            $eventArgs = new EventArgs($this, $a, $options);
+            $this->eventManager->dispatchEvent(Events::preSave, $eventArgs);
+            $a = $eventArgs->getData();
+            $options = $eventArgs->getOptions();
         }
 
         $result = $this->doSave($a, $options);
@@ -758,21 +842,27 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function update($query, array $newObj, array $options = array())
+    public function update($query, array $newObj, array $options = [])
     {
         if (is_scalar($query)) {
             trigger_error('Scalar $query argument for update() is deprecated', E_USER_DEPRECATED);
-            $query = array('_id' => $query);
+            $query = ['_id' => $query];
         }
 
         if ($this->eventManager->hasListeners(Events::preUpdate)) {
-            $this->eventManager->dispatchEvent(Events::preUpdate, new UpdateEventArgs($this, $query, $newObj, $options));
+            $updateEventArgs = new UpdateEventArgs($this, $query, $newObj, $options);
+            $this->eventManager->dispatchEvent(Events::preUpdate, $updateEventArgs);
+            $query = $updateEventArgs->getQuery();
+            $newObj = $updateEventArgs->getNewObj();
+            $options = $updateEventArgs->getOptions();
         }
 
         $result = $this->doUpdate($query, $newObj, $options);
 
         if ($this->eventManager->hasListeners(Events::postUpdate)) {
-            $this->eventManager->dispatchEvent(Events::postUpdate, new EventArgs($this, $result));
+            $eventArgs = new MutableEventArgs($this, $result);
+            $this->eventManager->dispatchEvent(Events::postUpdate, $eventArgs);
+            $result = $eventArgs->getData();
         }
 
         return $result;
@@ -790,7 +880,7 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    public function upsert($query, array $newObj, array $options = array())
+    public function upsert($query, array $newObj, array $options = [])
     {
         $options['upsert'] = true;
         return $this->update($query, $newObj, $options);
@@ -836,28 +926,84 @@ class Collection
      *
      * @see Collection::aggregate()
      * @param array $pipeline
-     * @return ArrayIterator
-     * @throws ResultException if the command fails
+     * @param array $options
+     * @return Iterator
      */
-    protected function doAggregate(array $pipeline)
+    protected function doAggregate(array $pipeline, array $options = [])
     {
-        $command = array();
+        if (isset($options['cursor']) && ($options['cursor'] || is_array($options['cursor']))) {
+            return $this->doAggregateCursor($pipeline, $options);
+        }
+
+        unset($options['cursor']);
+
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
+
+        $command = [];
         $command['aggregate'] = $this->mongoCollection->getName();
         $command['pipeline'] = $pipeline;
+        $command = array_merge($command, $commandOptions);
 
         $database = $this->database;
-        $result = $this->retry(function() use ($database, $command) {
-            return $database->command($command);
+        $result = $this->retry(function() use ($database, $command, $clientOptions) {
+            return $database->command($command, $clientOptions);
         });
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
         }
 
-        $arrayIterator = new ArrayIterator(isset($result['result']) ? $result['result'] : array());
+        /* If the pipeline ends with an $out operator, return a cursor on that
+         * collection so a table scan may be performed.
+         */
+        if (isset($pipeline[count($pipeline) - 1]['$out'])) {
+            $outputCollection = $pipeline[count($pipeline) - 1]['$out'];
+
+            return $database->selectCollection($outputCollection)->find();
+        }
+
+        $arrayIterator = new ArrayIterator(isset($result['result']) ? $result['result'] : []);
         $arrayIterator->setCommandResult($result);
 
         return $arrayIterator;
+    }
+
+    /**
+     * Executes the aggregate command and returns a MongoCommandCursor.
+     *
+     * @param array $pipeline
+     * @param array $options
+     * @return CommandCursor
+     * @throws BadMethodCallException if MongoCollection::aggregateCursor() is not available
+     */
+    protected function doAggregateCursor(array $pipeline, array $options = [])
+    {
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
+
+        if (is_scalar($commandOptions['cursor'])) {
+            unset($commandOptions['cursor']);
+        }
+
+        $timeout = isset($clientOptions['socketTimeoutMS'])
+            ? $clientOptions['socketTimeoutMS']
+            : (isset($clientOptions['timeout']) ? $clientOptions['timeout'] : null);
+
+        $mongoCollection = $this->mongoCollection;
+        $commandCursor = $this->retry(function() use ($mongoCollection, $pipeline, $commandOptions) {
+            return $mongoCollection->aggregateCursor($pipeline, $commandOptions);
+        });
+
+        $commandCursor = $this->wrapCommandCursor($commandCursor);
+
+        if (isset($timeout)) {
+            $commandCursor->timeout($timeout);
+        }
+
+        return $commandCursor;
     }
 
     /**
@@ -868,12 +1014,44 @@ class Collection
      * @param array $options
      * @return array|boolean
      */
-    protected function doBatchInsert(array &$a, array $options = array())
+    protected function doBatchInsert(array &$a, array $options = [])
     {
         $options = isset($options['safe']) ? $this->convertWriteConcern($options) : $options;
         $options = isset($options['wtimeout']) ? $this->convertWriteTimeout($options) : $options;
         $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
         return $this->mongoCollection->batchInsert($a, $options);
+    }
+
+    /**
+     * Execute the count command.
+     *
+     * @see Collection::count()
+     * @param array $query
+     * @param array $options
+     * @return integer
+     * @throws ResultException if the command fails or omits the result field
+     */
+    protected function doCount(array $query, array $options)
+    {
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
+
+        $command = [];
+        $command['count'] = $this->mongoCollection->getName();
+        $command['query'] = (object) $query;
+        $command = array_merge($command, $commandOptions);
+
+        $database = $this->database;
+        $result = $this->retry(function() use ($database, $command, $clientOptions) {
+            return $database->command($command, $clientOptions);
+        });
+
+        if (empty($result['ok']) || ! isset($result['n'])) {
+            throw new ResultException($result);
+        }
+
+        return (integer) $result['n'];
     }
 
     /**
@@ -888,24 +1066,26 @@ class Collection
      */
     protected function doDistinct($field, array $query, array $options)
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
 
-        $command = array();
+        $command = [];
         $command['distinct'] = $this->mongoCollection->getName();
         $command['key'] = $field;
         $command['query'] = (object) $query;
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
         $database = $this->database;
-        $result = $this->retry(function() use ($database, $command) {
-            return $database->command($command);
+        $result = $this->retry(function() use ($database, $command, $clientOptions) {
+            return $database->command($command, $clientOptions);
         });
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
         }
 
-        $arrayIterator = new ArrayIterator(isset($result['values']) ? $result['values'] : array());
+        $arrayIterator = new ArrayIterator(isset($result['values']) ? $result['values'] : []);
         $arrayIterator->setCommandResult($result);
 
         return $arrayIterator;
@@ -948,17 +1128,19 @@ class Collection
      * @return array|null
      * @throws ResultException if the command fails
      */
-    protected function doFindAndRemove(array $query, array $options = array())
+    protected function doFindAndRemove(array $query, array $options = [])
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
 
-        $command = array();
+        $command = [];
         $command['findandmodify'] = $this->mongoCollection->getName();
         $command['query'] = (object) $query;
         $command['remove'] = true;
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
-        $result = $this->database->command($command);
+        $result = $this->database->command($command, $clientOptions);
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
@@ -979,15 +1161,17 @@ class Collection
      */
     protected function doFindAndUpdate(array $query, array $newObj, array $options)
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
 
-        $command = array();
+        $command = [];
         $command['findandmodify'] = $this->mongoCollection->getName();
         $command['query'] = (object) $query;
         $command['update'] = (object) $newObj;
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
-        $result = $this->database->command($command);
+        $result = $this->database->command($command, $clientOptions);
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
@@ -1040,9 +1224,11 @@ class Collection
      */
     protected function doGroup($keys, array $initial, $reduce, array $options)
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
 
-        $command = array();
+        $command = [];
         $command['ns'] = $this->mongoCollection->getName();
         $command['initial'] = (object) $initial;
         $command['$reduce'] = $reduce;
@@ -1053,9 +1239,9 @@ class Collection
             $command['key'] = $keys;
         }
 
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
-        foreach (array('$keyf', '$reduce', 'finalize') as $key) {
+        foreach (['$keyf', '$reduce', 'finalize'] as $key) {
             if (isset($command[$key]) && is_string($command[$key])) {
                 $command[$key] = new \MongoCode($command[$key]);
             }
@@ -1066,15 +1252,15 @@ class Collection
         }
 
         $database = $this->database;
-        $result = $this->retry(function() use ($database, $command) {
-            return $database->command(array('group' => $command));
+        $result = $this->retry(function() use ($database, $command, $clientOptions) {
+            return $database->command(['group' => $command], $clientOptions);
         });
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
         }
 
-        $arrayIterator = new ArrayIterator(isset($result['retval']) ? $result['retval'] : array());
+        $arrayIterator = new ArrayIterator(isset($result['retval']) ? $result['retval'] : []);
         $arrayIterator->setCommandResult($result);
 
         return $arrayIterator;
@@ -1115,23 +1301,25 @@ class Collection
      */
     protected function doMapReduce($map, $reduce, $out, array $query, array $options)
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
 
-        $command = array();
+        $command = [];
         $command['mapreduce'] = $this->mongoCollection->getName();
         $command['map'] = $map;
         $command['reduce'] = $reduce;
         $command['query'] = (object) $query;
         $command['out'] = $out;
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
-        foreach (array('map', 'reduce', 'finalize') as $key) {
+        foreach (['map', 'reduce', 'finalize'] as $key) {
             if (isset($command[$key]) && is_string($command[$key])) {
                 $command[$key] = new \MongoCode($command[$key]);
             }
         }
 
-        $result = $this->database->command($command);
+        $result = $this->database->command($command, $clientOptions);
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
@@ -1148,7 +1336,7 @@ class Collection
                 ->find();
         }
 
-        $arrayIterator = new ArrayIterator(isset($result['results']) ? $result['results'] : array());
+        $arrayIterator = new ArrayIterator(isset($result['results']) ? $result['results'] : []);
         $arrayIterator->setCommandResult($result);
 
         return $arrayIterator;
@@ -1166,29 +1354,31 @@ class Collection
      */
     protected function doNear($near, array $query, array $options)
     {
-        $options = isset($options['timeout']) ? $this->convertSocketTimeout($options) : $options;
-
         if ($near instanceof Point) {
             $near = $near->jsonSerialize();
         }
 
-        $command = array();
+        list($commandOptions, $clientOptions) = isset($options['socketTimeoutMS']) || isset($options['timeout'])
+            ? $this->splitCommandAndClientOptions($options)
+            : [$options, []];
+
+        $command = [];
         $command['geoNear'] = $this->mongoCollection->getName();
         $command['near'] = $near;
         $command['spherical'] = isset($near['type']);
         $command['query'] = (object) $query;
-        $command = array_merge($command, $options);
+        $command = array_merge($command, $commandOptions);
 
         $database = $this->database;
-        $result = $this->retry(function() use ($database, $command) {
-            return $database->command($command);
+        $result = $this->retry(function() use ($database, $command, $clientOptions) {
+            return $database->command($command, $clientOptions);
         });
 
         if (empty($result['ok'])) {
             throw new ResultException($result);
         }
 
-        $arrayIterator = new ArrayIterator(isset($result['results']) ? $result['results'] : array());
+        $arrayIterator = new ArrayIterator(isset($result['results']) ? $result['results'] : []);
         $arrayIterator->setCommandResult($result);
 
         return $arrayIterator;
@@ -1286,6 +1476,17 @@ class Collection
     }
 
     /**
+     * Wraps a MongoCommandCursor instance with a CommandCursor.
+     *
+     * @param \MongoCommandCursor $commandCursor
+     * @return CommandCursor
+     */
+    protected function wrapCommandCursor(\MongoCommandCursor $commandCursor)
+    {
+        return new CommandCursor($commandCursor, $this->numRetries);
+    }
+
+    /**
      * Wraps a MongoCursor instance with a Cursor.
      *
      * @param \MongoCursor $cursor
@@ -1306,10 +1507,6 @@ class Collection
      */
     protected function convertWriteConcern(array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            return $options;
-        }
-
         if (isset($options['safe']) && ! isset($options['w'])) {
             $options['w'] = is_bool($options['safe']) ? (integer) $options['safe'] : $options['safe'];
             unset($options['safe']);
@@ -1327,10 +1524,6 @@ class Collection
      */
     protected function convertWriteTimeout(array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.5.0', '<')) {
-            return $options;
-        }
-
         if (isset($options['wtimeout']) && ! isset($options['wTimeoutMS'])) {
             $options['wTimeoutMS'] = $options['wtimeout'];
             unset($options['wtimeout']);
@@ -1348,15 +1541,30 @@ class Collection
      */
     protected function convertSocketTimeout(array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.5.0', '<')) {
-            return $options;
-        }
-
         if (isset($options['timeout']) && ! isset($options['socketTimeoutMS'])) {
             $options['socketTimeoutMS'] = $options['timeout'];
             unset($options['timeout']);
         }
 
         return $options;
+    }
+
+    /**
+     * Splits a command helper's options array into command and client options.
+     *
+     * Command options are intended to be merged into the command document.
+     * Client options (e.g. socket timeout) are for {@link Database::command()}.
+     *
+     * @param array $options
+     * @return array Tuple of command options and client options
+     */
+    protected function splitCommandAndClientOptions(array $options)
+    {
+        $keys = ['socketTimeoutMS' => 1, 'timeout' => 1];
+
+        return [
+            array_diff_key($options, $keys),
+            array_intersect_key($options, $keys),
+        ];
     }
 }

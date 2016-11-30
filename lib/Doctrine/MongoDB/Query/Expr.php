@@ -38,7 +38,7 @@ class Expr
      *
      * @var string
      */
-    protected $query = array();
+    protected $query = [];
 
     /**
      * The "new object" array containing either a full document or a number of
@@ -47,7 +47,7 @@ class Expr
      * @see docs.mongodb.org/manual/reference/method/db.collection.update/#update-parameter
      * @var array
      */
-    protected $newObj = array();
+    protected $newObj = [];
 
     /**
      * The current field we are operating on.
@@ -57,16 +57,29 @@ class Expr
     protected $currentField;
 
     /**
-     * Add an $and clause to the current query.
+     * Add one or more $and clauses to the current query.
      *
      * @see Builder::addAnd()
      * @see http://docs.mongodb.org/manual/reference/operator/and/
      * @param array|Expr $expression
-     * @return self
+     * @return $this
      */
-    public function addAnd($expression)
+    public function addAnd($expression /*, $expression2, ... */)
     {
-        $this->query['$and'][] = $expression instanceof Expr ? $expression->getQuery() : $expression;
+        if (! isset($this->query['$and'])) {
+            $this->query['$and'] = [];
+        }
+
+        $this->query['$and'] = array_merge(
+            $this->query['$and'],
+            array_map(
+                function ($expression) {
+                    return $expression instanceof Expr ? $expression->getQuery() : $expression;
+                },
+                func_get_args()
+            )
+        );
+
         return $this;
     }
 
@@ -83,40 +96,56 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/addToSet/
      * @see http://docs.mongodb.org/manual/reference/operator/each/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function addManyToSet(array $values)
     {
         $this->requiresCurrentField();
-        $this->newObj['$addToSet'][$this->currentField] = array('$each' => $values);
+        $this->newObj['$addToSet'][$this->currentField] = ['$each' => $values];
         return $this;
     }
 
     /**
-     * Add a $nor clause to the current query.
+     * Add one or more $nor clauses to the current query.
      *
      * @see Builder::addNor()
      * @see http://docs.mongodb.org/manual/reference/operator/nor/
      * @param array|Expr $expression
-     * @return self
+     * @return $this
      */
-    public function addNor($expression)
+    public function addNor($expression /* , $expression2, ... */)
     {
-        $this->query['$nor'][] = $expression instanceof Expr ? $expression->getQuery() : $expression;
+        if (! isset($this->query['$nor'])) {
+            $this->query['$nor'] = [];
+        }
+
+        $this->query['$nor'] = array_merge(
+            $this->query['$nor'],
+            array_map(function ($expression) { return $expression instanceof Expr ? $expression->getQuery() : $expression; }, func_get_args())
+        );
+
         return $this;
     }
 
     /**
-     * Add an $or clause to the current query.
+     * Add one or more $or clauses to the current query.
      *
      * @see Builder::addOr()
      * @see http://docs.mongodb.org/manual/reference/operator/or/
      * @param array|Expr $expression
-     * @return self
+     * @return $this
      */
-    public function addOr($expression)
+    public function addOr($expression /* , $expression2, ... */)
     {
-        $this->query['$or'][] = $expression instanceof Expr ? $expression->getQuery() : $expression;
+        if (! isset($this->query['$or'])) {
+            $this->query['$or'] = [];
+        }
+
+        $this->query['$or'] = array_merge(
+            $this->query['$or'],
+            array_map(function ($expression) { return $expression instanceof Expr ? $expression->getQuery() : $expression; }, func_get_args())
+        );
+
         return $this;
     }
 
@@ -135,7 +164,7 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/addToSet/
      * @see http://docs.mongodb.org/manual/reference/operator/each/
      * @param mixed|Expr $valueOrExpression
-     * @return self
+     * @return $this
      */
     public function addToSet($valueOrExpression)
     {
@@ -154,11 +183,219 @@ class Expr
      * @see Builder::all()
      * @see http://docs.mongodb.org/manual/reference/operator/all/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function all(array $values)
     {
         return $this->operator('$all', (array) $values);
+    }
+
+    /**
+     * Apply a bitwise operation on the current field
+     *
+     * @see http://docs.mongodb.org/manual/reference/operator/update/bit/
+     * @param string $operator
+     * @param int $value
+     * @return $this
+     */
+    protected function bit($operator, $value)
+    {
+        $this->requiresCurrentField();
+        $this->newObj['$bit'][$this->currentField][$operator] = $value;
+        return $this;
+    }
+
+    /**
+     * Apply a bitwise and operation on the current field.
+     *
+     * @see Builder::bitAnd()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/bit/
+     * @param int $value
+     * @return $this
+     */
+    public function bitAnd($value)
+    {
+        return $this->bit('and', $value);
+    }
+
+    /**
+     * Apply a bitwise or operation on the current field.
+     *
+     * @see Builder::bitOr()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/bit/
+     * @param int $value
+     * @return $this
+     */
+    public function bitOr($value)
+    {
+        return $this->bit('or', $value);
+    }
+
+    /**
+     * Matches documents where all of the bit positions given by the query are
+     * clear.
+     *
+     * @see Builder::bitsAllClear()
+     * @see https://docs.mongodb.org/manual/reference/operator/query/bitsAllClear/
+     * @param int|array|\MongoBinData $value
+     * @return $this
+     */
+    public function bitsAllClear($value)
+    {
+        $this->requiresCurrentField();
+        return $this->operator('$bitsAllClear', $value);
+    }
+
+    /**
+     * Matches documents where all of the bit positions given by the query are
+     * set.
+     *
+     * @see Builder::bitsAllSet()
+     * @see https://docs.mongodb.org/manual/reference/operator/query/bitsAllSet/
+     * @param int|array|\MongoBinData $value
+     * @return $this
+     */
+    public function bitsAllSet($value)
+    {
+        $this->requiresCurrentField();
+        return $this->operator('$bitsAllSet', $value);
+    }
+
+    /**
+     * Matches documents where any of the bit positions given by the query are
+     * clear.
+     *
+     * @see Builder::bitsAnyClear()
+     * @see https://docs.mongodb.org/manual/reference/operator/query/bitsAnyClear/
+     * @param int|array|\MongoBinData $value
+     * @return $this
+     */
+    public function bitsAnyClear($value)
+    {
+        $this->requiresCurrentField();
+        return $this->operator('$bitsAnyClear', $value);
+    }
+
+    /**
+     * Matches documents where any of the bit positions given by the query are
+     * set.
+     *
+     * @see Builder::bitsAnySet()
+     * @see https://docs.mongodb.org/manual/reference/operator/query/bitsAnySet/
+     * @param int|array|\MongoBinData $value
+     * @return $this
+     */
+    public function bitsAnySet($value)
+    {
+        $this->requiresCurrentField();
+        return $this->operator('$bitsAnySet', $value);
+    }
+
+    /**
+     * Apply a bitwise xor operation on the current field.
+     *
+     * @see Builder::bitXor()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/bit/
+     * @param int $value
+     * @return $this
+     */
+    public function bitXor($value)
+    {
+        return $this->bit('xor', $value);
+    }
+
+    /**
+     * A boolean flag to enable or disable case sensitive search for $text
+     * criteria.
+     *
+     * This method must be called after text().
+     *
+     * @see Builder::caseSensitive()
+     * @see http://docs.mongodb.org/manual/reference/operator/text/
+     * @param bool $caseSensitive
+     * @return $this
+     * @throws BadMethodCallException if the query does not already have $text criteria
+     *
+     * @since 1.3
+     */
+    public function caseSensitive($caseSensitive)
+    {
+        if ( ! isset($this->query['$text'])) {
+            throw new BadMethodCallException('This method requires a $text operator (call text() first)');
+        }
+
+        // Remove caseSensitive option to keep support for older database versions
+        if ($caseSensitive) {
+            $this->query['$text']['$caseSensitive'] = true;
+        } elseif (isset($this->query['$text']['$caseSensitive'])) {
+            unset($this->query['$text']['$caseSensitive']);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Associates a comment to any expression taking a query predicate.
+     *
+     * @see Builder::comment()
+     * @see http://docs.mongodb.org/manual/reference/operator/query/comment/
+     * @param string $comment
+     * @return $this
+     */
+    public function comment($comment)
+    {
+        $this->query['$comment'] = $comment;
+        return $this;
+    }
+
+    /**
+     * Sets the value of the current field to the current date, either as a date or a timestamp.
+     *
+     * @see Builder::currentDate()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/currentDate/
+     * @param string $type
+     * @return $this
+     * @throws InvalidArgumentException if an invalid type is given
+     */
+    public function currentDate($type = 'date')
+    {
+        if (!in_array($type, ['date', 'timestamp'])) {
+            throw new InvalidArgumentException('Type for currentDate operator must be date or timestamp.');
+        }
+
+        $this->requiresCurrentField();
+        $this->newObj['$currentDate'][$this->currentField]['$type'] = $type;
+        return $this;
+    }
+
+    /**
+     * A boolean flag to enable or disable diacritic sensitive search for $text
+     * criteria.
+     *
+     * This method must be called after text().
+     *
+     * @see Builder::diacriticSensitive()
+     * @see http://docs.mongodb.org/manual/reference/operator/text/
+     * @param bool $diacriticSensitive
+     * @return $this
+     * @throws BadMethodCallException if the query does not already have $text criteria
+     *
+     * @since 1.3
+     */
+    public function diacriticSensitive($diacriticSensitive)
+    {
+        if ( ! isset($this->query['$text'])) {
+            throw new BadMethodCallException('This method requires a $text operator (call text() first)');
+        }
+
+        // Remove diacriticSensitive option to keep support for older database versions
+        if ($diacriticSensitive) {
+            $this->query['$text']['$diacriticSensitive'] = true;
+        } elseif (isset($this->query['$text']['$diacriticSensitive'])) {
+            unset($this->query['$text']['$diacriticSensitive']);
+        }
+
+        return $this;
     }
 
     /**
@@ -167,7 +404,7 @@ class Expr
      * @see Expr::push()
      * @see http://docs.mongodb.org/manual/reference/operator/each/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function each(array $values)
     {
@@ -180,7 +417,7 @@ class Expr
      * @see Builder::elemMatch()
      * @see http://docs.mongodb.org/manual/reference/operator/elemMatch/
      * @param array|Expr $expression
-     * @return self
+     * @return $this
      */
     public function elemMatch($expression)
     {
@@ -192,7 +429,7 @@ class Expr
      *
      * @see Builder::equals()
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function equals($value)
     {
@@ -210,7 +447,7 @@ class Expr
      * @see Builder::exists()
      * @see http://docs.mongodb.org/manual/reference/operator/exists/
      * @param boolean $bool
-     * @return self
+     * @return $this
      */
     public function exists($bool)
     {
@@ -222,7 +459,7 @@ class Expr
      *
      * @see Builder::field()
      * @param string $field
-     * @return self
+     * @return $this
      */
     public function field($field)
     {
@@ -239,7 +476,7 @@ class Expr
      * @see Builder::geoIntersects()
      * @see http://docs.mongodb.org/manual/reference/operator/geoIntersects/
      * @param array|Geometry $geometry
-     * @return self
+     * @return $this
      */
     public function geoIntersects($geometry)
     {
@@ -247,7 +484,7 @@ class Expr
             $geometry = $geometry->jsonSerialize();
         }
 
-        return $this->operator('$geoIntersects', array('$geometry' => $geometry));
+        return $this->operator('$geoIntersects', ['$geometry' => $geometry]);
     }
 
     /**
@@ -259,7 +496,7 @@ class Expr
      * @see Builder::geoWithin()
      * @see http://docs.mongodb.org/manual/reference/operator/geoIntersects/
      * @param array|Geometry $geometry
-     * @return self
+     * @return $this
      */
     public function geoWithin($geometry)
     {
@@ -267,7 +504,7 @@ class Expr
             $geometry = $geometry->jsonSerialize();
         }
 
-        return $this->operator('$geoWithin', array('$geometry' => $geometry));
+        return $this->operator('$geoWithin', ['$geometry' => $geometry]);
     }
 
     /**
@@ -285,11 +522,11 @@ class Expr
      * @param float $y1
      * @param float $x2
      * @param float $y2
-     * @return self
+     * @return $this
      */
     public function geoWithinBox($x1, $y1, $x2, $y2)
     {
-        $shape = array('$box' => array(array($x1, $y1), array($x2, $y2)));
+        $shape = ['$box' => [[$x1, $y1], [$x2, $y2]]];
 
         return $this->operator('$geoWithin', $shape);
     }
@@ -305,11 +542,11 @@ class Expr
      * @param float $x
      * @param float $y
      * @param float $radius
-     * @return self
+     * @return $this
      */
     public function geoWithinCenter($x, $y, $radius)
     {
-        $shape = array('$center' => array(array($x, $y), $radius));
+        $shape = ['$center' => [[$x, $y], $radius]];
 
         return $this->operator('$geoWithin', $shape);
     }
@@ -324,11 +561,11 @@ class Expr
      * @param float $x
      * @param float $y
      * @param float $radius
-     * @return self
+     * @return $this
      */
     public function geoWithinCenterSphere($x, $y, $radius)
     {
-        $shape = array('$centerSphere' => array(array($x, $y), $radius));
+        $shape = ['$centerSphere' => [[$x, $y], $radius]];
 
         return $this->operator('$geoWithin', $shape);
     }
@@ -347,7 +584,7 @@ class Expr
      * @see Builder::geoWithinPolygon()
      * @see http://docs.mongodb.org/manual/reference/operator/polygon/
      * @param array $point,... Three or more point coordinate tuples
-     * @return self
+     * @return $this
      * @throws InvalidArgumentException if less than three points are given
      */
     public function geoWithinPolygon(/* array($x1, $y1), ... */)
@@ -356,7 +593,7 @@ class Expr
             throw new InvalidArgumentException('Polygon must be defined by three or more points.');
         }
 
-        $shape = array('$polygon' => func_get_args());
+        $shape = ['$polygon' => func_get_args()];
 
         return $this->operator('$geoWithin', $shape);
     }
@@ -387,7 +624,7 @@ class Expr
      *
      * @see Builder::setNewObj()
      * @param array $newObj
-     * @return self
+     * @return $this
      */
     public function setNewObj(array $newObj)
     {
@@ -410,7 +647,7 @@ class Expr
      *
      * @see Builder::setQueryArray()
      * @param array $query
-     * @return self
+     * @return $this
      */
     public function setQuery(array $query)
     {
@@ -423,7 +660,7 @@ class Expr
      * @see Builder::gt()
      * @see http://docs.mongodb.org/manual/reference/operator/gt/
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function gt($value)
     {
@@ -436,7 +673,7 @@ class Expr
      * @see Builder::gte()
      * @see http://docs.mongodb.org/manual/reference/operator/gte/
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function gte($value)
     {
@@ -449,7 +686,7 @@ class Expr
      * @see Builder::in()
      * @see http://docs.mongodb.org/manual/reference/operator/in/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function in(array $values)
     {
@@ -464,7 +701,7 @@ class Expr
      * @see Builder::inc()
      * @see http://docs.mongodb.org/manual/reference/operator/inc/
      * @param float|integer $value
-     * @return self
+     * @return $this
      */
     public function inc($value)
     {
@@ -481,7 +718,7 @@ class Expr
      * @see Builder::language()
      * @see http://docs.mongodb.org/manual/reference/operator/text/
      * @param string $language
-     * @return self
+     * @return $this
      * @throws BadMethodCallException if the query does not already have $text criteria
      */
     public function language($language)
@@ -501,7 +738,7 @@ class Expr
      * @see Builder::lte()
      * @see http://docs.mongodb.org/manual/reference/operator/lte/
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function lt($value)
     {
@@ -514,11 +751,26 @@ class Expr
      * @see Builder::lte()
      * @see http://docs.mongodb.org/manual/reference/operator/lte/
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function lte($value)
     {
         return $this->operator('$lte', $value);
+    }
+
+    /**
+     * Updates the value of the field to a specified value if the specified value is greater than the current value of the field.
+     *
+     * @see Builder::max()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/max/
+     * @param mixed $value
+     * @return $this
+     */
+    public function max($value)
+    {
+        $this->requiresCurrentField();
+        $this->newObj['$max'][$this->currentField] = $value;
+        return $this;
     }
 
     /**
@@ -530,7 +782,7 @@ class Expr
      *
      * @see http://docs.mongodb.org/manual/reference/operator/maxDistance/
      * @param float $maxDistance
-     * @return self
+     * @return $this
      * @throws BadMethodCallException if the query does not already have $near or $nearSphere criteria
      */
     public function maxDistance($maxDistance)
@@ -559,6 +811,21 @@ class Expr
     }
 
     /**
+     * Updates the value of the field to a specified value if the specified value is less than the current value of the field.
+     *
+     * @see Builder::min()
+     * @see http://docs.mongodb.org/manual/reference/operator/update/min/
+     * @param mixed $value
+     * @return $this
+     */
+    public function min($value)
+    {
+        $this->requiresCurrentField();
+        $this->newObj['$min'][$this->currentField] = $value;
+        return $this;
+    }
+
+    /**
      * Set the $minDistance option for $near or $nearSphere criteria.
      *
      * This method must be called after near() or nearSphere(), since placement
@@ -567,7 +834,7 @@ class Expr
      *
      * @see http://docs.mongodb.org/manual/reference/operator/minDistance/
      * @param float $minDistance
-     * @return self
+     * @return $this
      * @throws BadMethodCallException if the query does not already have $near or $nearSphere criteria
      */
     public function minDistance($minDistance)
@@ -602,11 +869,28 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/mod/
      * @param float|integer $divisor
      * @param float|integer $remainder
-     * @return self
+     * @return $this
      */
     public function mod($divisor, $remainder = 0)
     {
-        return $this->operator('$mod', array($divisor, $remainder));
+        return $this->operator('$mod', [$divisor, $remainder]);
+    }
+
+    /**
+     * Multiply the current field.
+     *
+     * If the field does not exist, it will be set to 0.
+     *
+     * @see Builder::mul()
+     * @see http://docs.mongodb.org/manual/reference/operator/mul/
+     * @param float|integer $value
+     * @return $this
+     */
+    public function mul($value)
+    {
+        $this->requiresCurrentField();
+        $this->newObj['$mul'][$this->currentField] = $value;
+        return $this;
     }
 
     /**
@@ -620,7 +904,7 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/near/
      * @param float|array|Point $x
      * @param float $y
-     * @return self
+     * @return $this
      */
     public function near($x, $y = null)
     {
@@ -629,10 +913,10 @@ class Expr
         }
 
         if (is_array($x)) {
-            return $this->operator('$near', array('$geometry' => $x));
+            return $this->operator('$near', ['$geometry' => $x]);
         }
 
-        return $this->operator('$near', array($x, $y));
+        return $this->operator('$near', [$x, $y]);
     }
 
     /**
@@ -646,7 +930,7 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/nearSphere/
      * @param float|array|Point $x
      * @param float $y
-     * @return self
+     * @return $this
      */
     public function nearSphere($x, $y = null)
     {
@@ -655,10 +939,10 @@ class Expr
         }
 
         if (is_array($x)) {
-            return $this->operator('$nearSphere', array('$geometry' => $x));
+            return $this->operator('$nearSphere', ['$geometry' => $x]);
         }
 
-        return $this->operator('$nearSphere', array($x, $y));
+        return $this->operator('$nearSphere', [$x, $y]);
     }
 
     /**
@@ -667,7 +951,7 @@ class Expr
      * @see Builder::not()
      * @see http://docs.mongodb.org/manual/reference/operator/not/
      * @param array|Expr $expression
-     * @return self
+     * @return $this
      */
     public function not($expression)
     {
@@ -680,7 +964,7 @@ class Expr
      * @see Builder::notEqual()
      * @see http://docs.mongodb.org/manual/reference/operator/ne/
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function notEqual($value)
     {
@@ -693,7 +977,7 @@ class Expr
      * @see Builder::notIn()
      * @see http://docs.mongodb.org/manual/reference/operator/nin/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function notIn(array $values)
     {
@@ -708,10 +992,12 @@ class Expr
      *
      * @param string $operator
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function operator($operator, $value)
     {
+        $this->wrapEqualityCriteria();
+
         if ($this->currentField) {
             $this->query[$this->currentField][$operator] = $value;
         } else {
@@ -725,7 +1011,7 @@ class Expr
      *
      * @see Builder::popFirst()
      * @see http://docs.mongodb.org/manual/reference/operator/pop/
-     * @return self
+     * @return $this
      */
     public function popFirst()
     {
@@ -739,7 +1025,7 @@ class Expr
      *
      * @see Builder::popLast()
      * @see http://docs.mongodb.org/manual/reference/operator/pop/
-     * @return self
+     * @return $this
      */
     public function popLast()
     {
@@ -749,13 +1035,28 @@ class Expr
     }
 
     /**
+     * Add $position criteria to the expression for a $push operation.
+     *
+     * This is useful in conjunction with {@link Expr::each()} for a
+     * {@link Expr::push()} operation.
+     *
+     * @see http://docs.mongodb.org/manual/reference/operator/update/position/
+     * @param integer $position
+     * @return $this
+     */
+    public function position($position)
+    {
+        return $this->operator('$position', $position);
+    }
+
+    /**
      * Remove all elements matching the given value or expression from the
      * current array field.
      *
      * @see Builder::pull()
      * @see http://docs.mongodb.org/manual/reference/operator/pull/
      * @param mixed|Expr $valueOrExpression
-     * @return self
+     * @return $this
      */
     public function pull($valueOrExpression)
     {
@@ -775,7 +1076,7 @@ class Expr
      * @see Builder::pullAll()
      * @see http://docs.mongodb.org/manual/reference/operator/pullAll/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function pullAll(array $values)
     {
@@ -801,13 +1102,13 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/slice/
      * @see http://docs.mongodb.org/manual/reference/operator/sort/
      * @param mixed|Expr $valueOrExpression
-     * @return self
+     * @return $this
      */
     public function push($valueOrExpression)
     {
         if ($valueOrExpression instanceof Expr) {
             $valueOrExpression = array_merge(
-                array('$each' => array()),
+                ['$each' => []],
                 $valueOrExpression->getQuery()
             );
         }
@@ -830,7 +1131,7 @@ class Expr
      * @see Builder::pushAll()
      * @see http://docs.mongodb.org/manual/reference/operator/pushAll/
      * @param array $values
-     * @return self
+     * @return $this
      */
     public function pushAll(array $values)
     {
@@ -848,7 +1149,7 @@ class Expr
      * @see Builder::range()
      * @param mixed $start
      * @param mixed $end
-     * @return self
+     * @return $this
      */
     public function range($start, $end)
     {
@@ -861,7 +1162,7 @@ class Expr
      * @see Builder::rename()
      * @see http://docs.mongodb.org/manual/reference/operator/rename/
      * @param string $name
-     * @return self
+     * @return $this
      */
     public function rename($name)
     {
@@ -881,7 +1182,7 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/set/
      * @param mixed $value
      * @param boolean $atomic
-     * @return self
+     * @return $this
      */
     public function set($value, $atomic = true)
     {
@@ -908,12 +1209,34 @@ class Expr
     }
 
     /**
+     * Set the current field to the value if the document is inserted in an
+     * upsert operation.
+     *
+     * If an update operation with upsert: true results in an insert of a
+     * document, then $setOnInsert assigns the specified values to the fields in
+     * the document. If the update operation does not result in an insert,
+     * $setOnInsert does nothing.
+     *
+     * @see Builder::setOnInsert()
+     * @see https://docs.mongodb.org/manual/reference/operator/update/setOnInsert/
+     * @param mixed $value
+     * @return $this
+     */
+    public function setOnInsert($value)
+    {
+        $this->requiresCurrentField();
+        $this->newObj['$setOnInsert'][$this->currentField] = $value;
+
+        return $this;
+    }
+
+    /**
      * Specify $size criteria for the current field.
      *
      * @see Builder::size()
      * @see http://docs.mongodb.org/manual/reference/operator/size/
      * @param integer $size
-     * @return self
+     * @return $this
      */
     public function size($size)
     {
@@ -929,7 +1252,7 @@ class Expr
      *
      * @see http://docs.mongodb.org/manual/reference/operator/slice/
      * @param integer $slice
-     * @return self
+     * @return $this
      */
     public function slice($slice)
     {
@@ -949,11 +1272,11 @@ class Expr
      * @see http://docs.mongodb.org/manual/reference/operator/sort/
      * @param array|string $fieldName Field name or array of field/order pairs
      * @param int|string $order       Field order (if one field is specified)
-     * @return self
+     * @return $this
      */
     public function sort($fieldName, $order = null)
     {
-        $fields = is_array($fieldName) ? $fieldName : array($fieldName => $order);
+        $fields = is_array($fieldName) ? $fieldName : [$fieldName => $order];
 
         foreach ($fields as $fieldName => $order) {
             if (is_string($order)) {
@@ -973,11 +1296,11 @@ class Expr
      * @see Builder::text()
      * @see http://docs.mongodb.org/master/reference/operator/query/text/
      * @param string $search
-     * @return self
+     * @return $this
      */
     public function text($search)
     {
-        $this->query['$text'] = array('$search' => (string) $search);
+        $this->query['$text'] = ['$search' => (string) $search];
         return $this;
     }
 
@@ -988,12 +1311,12 @@ class Expr
      * @see Builder::type()
      * @see http://docs.mongodb.org/manual/reference/operator/type/
      * @param integer $type
-     * @return self
+     * @return $this
      */
     public function type($type)
     {
         if (is_string($type)) {
-            $map = array(
+            $map = [
                 'double' => 1,
                 'string' => 2,
                 'object' => 3,
@@ -1013,7 +1336,7 @@ class Expr
                 'integer64' => 18,
                 'maxkey' => 127,
                 'minkey' => 255,
-            );
+            ];
 
             $type = isset($map[$type]) ? $map[$type] : $type;
         }
@@ -1028,7 +1351,7 @@ class Expr
      *
      * @see Builder::unsetField()
      * @see http://docs.mongodb.org/manual/reference/operator/unset/
-     * @return self
+     * @return $this
      */
     public function unsetField()
     {
@@ -1043,7 +1366,7 @@ class Expr
      * @see Builder::where()
      * @see http://docs.mongodb.org/manual/reference/operator/where/
      * @param string|\MongoCode $javascript
-     * @return self
+     * @return $this
      */
     public function where($javascript)
     {
@@ -1061,11 +1384,11 @@ class Expr
      * @param float $y1
      * @param float $x2
      * @param float $y2
-     * @return self
+     * @return $this
      */
     public function withinBox($x1, $y1, $x2, $y2)
     {
-        $shape = array('$box' => array(array($x1, $y1), array($x2, $y2)));
+        $shape = ['$box' => [[$x1, $y1], [$x2, $y2]]];
 
         return $this->operator('$within', $shape);
     }
@@ -1079,11 +1402,11 @@ class Expr
      * @param float $x
      * @param float $y
      * @param float $radius
-     * @return self
+     * @return $this
      */
     public function withinCenter($x, $y, $radius)
     {
-        $shape = array('$center' => array(array($x, $y), $radius));
+        $shape = ['$center' => [[$x, $y], $radius]];
 
         return $this->operator('$within', $shape);
     }
@@ -1097,11 +1420,11 @@ class Expr
      * @param float $x
      * @param float $y
      * @param float $radius
-     * @return self
+     * @return $this
      */
     public function withinCenterSphere($x, $y, $radius)
     {
-        $shape = array('$centerSphere' => array(array($x, $y), $radius));
+        $shape = ['$centerSphere' => [[$x, $y], $radius]];
 
         return $this->operator('$within', $shape);
     }
@@ -1118,7 +1441,7 @@ class Expr
      * @see Expr::geoWithinPolygon()
      * @see http://docs.mongodb.org/manual/reference/operator/polygon/
      * @param array $point,... Three or more point coordinate tuples
-     * @return self
+     * @return $this
      * @throws InvalidArgumentException if less than three points are given
      */
     public function withinPolygon(/* array($x1, $y1), array($x2, $y2), ... */)
@@ -1127,7 +1450,7 @@ class Expr
             throw new InvalidArgumentException('Polygon must be defined by three or more points.');
         }
 
-        $shape = array('$polygon' => func_get_args());
+        $shape = ['$polygon' => func_get_args()];
 
         return $this->operator('$within', $shape);
     }
@@ -1142,5 +1465,42 @@ class Expr
         if ( ! $this->currentField) {
             throw new LogicException('This method requires you set a current field using field().');
         }
+    }
+
+    /**
+     * Wraps equality criteria with an operator.
+     *
+     * If equality criteria was previously specified for a field, it cannot be
+     * merged with other operators without first being wrapped in an operator of
+     * its own. Ideally, we would wrap it with $eq, but that is only available
+     * in MongoDB 2.8. Using a single-element $in is backwards compatible.
+     *
+     * @see Expr::operator()
+     */
+    private function wrapEqualityCriteria()
+    {
+        /* If the current field has no criteria yet, do nothing. This ensures
+         * that we do not inadvertently inject {"$in": null} into the query.
+         */
+        if ($this->currentField && ! isset($this->query[$this->currentField]) && ! array_key_exists($this->currentField, $this->query)) {
+            return;
+        }
+
+        if ($this->currentField) {
+            $query = &$this->query[$this->currentField];
+        } else {
+            $query = &$this->query;
+        }
+
+        /* If the query is an empty array, we'll assume that the user has not
+         * specified criteria. Otherwise, check if the array includes a query
+         * operator (checking the first key is sufficient). If neither of these
+         * conditions are met, we'll wrap the query value with $in.
+         */
+        if (is_array($query) && (empty($query) || strpos(key($query), '$') === 0)) {
+            return;
+        }
+
+        $query = ['$in' => [$query]];
     }
 }

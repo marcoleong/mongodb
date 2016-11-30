@@ -21,6 +21,7 @@ namespace Doctrine\MongoDB\Query;
 
 use Doctrine\MongoDB\Collection;
 use Doctrine\MongoDB\Cursor;
+use Doctrine\MongoDB\CursorInterface;
 use Doctrine\MongoDB\Database;
 use Doctrine\MongoDB\EagerCursor;
 use Doctrine\MongoDB\Iterator;
@@ -152,7 +153,7 @@ class Query implements IteratorAggregate
      * (e.g. aggregate, inline mapReduce) may return an ArrayIterator. Other
      * commands and operations may return a status array or a boolean, depending
      * on the driver's write concern. Queries and some mapReduce commands will
-     * return a Cursor.
+     * return a CursorInterface.
      *
      * @return mixed
      */
@@ -164,22 +165,28 @@ class Query implements IteratorAggregate
             case self::TYPE_FIND:
                 $cursor = $this->collection->find(
                     $this->query['query'],
-                    isset($this->query['select']) ? $this->query['select'] : array()
+                    isset($this->query['select']) ? $this->query['select'] : []
                 );
 
                 return $this->prepareCursor($cursor);
 
             case self::TYPE_FIND_AND_UPDATE:
+                $queryOptions = $this->getQueryOptions('new', 'select', 'sort', 'upsert');
+                $queryOptions = $this->renameQueryOptions($queryOptions, ['select' => 'fields']);
+
                 return $this->collection->findAndUpdate(
                     $this->query['query'],
                     $this->query['newObj'],
-                    array_merge($options, $this->getQueryOptions('new', 'select', 'sort', 'upsert'))
+                    array_merge($options, $queryOptions)
                 );
 
             case self::TYPE_FIND_AND_REMOVE:
+                $queryOptions = $this->getQueryOptions('select', 'sort');
+                $queryOptions = $this->renameQueryOptions($queryOptions, ['select' => 'fields']);
+
                 return $this->collection->findAndRemove(
                     $this->query['query'],
-                    array_merge($options, $this->getQueryOptions('select', 'sort'))
+                    array_merge($options, $queryOptions)
                 );
 
             case self::TYPE_INSERT:
@@ -268,8 +275,11 @@ class Query implements IteratorAggregate
                 $collection = $this->collection;
                 $query = $this->query;
 
-                $closure = function() use ($collection, $query) {
-                    return $collection->count($query['query']);
+                $closure = function() use ($collection, $query, $options) {
+                    return $collection->count(
+                        $query['query'],
+                        array_merge($options, $this->getQueryOptions('hint', 'limit', 'maxTimeMS', 'skip'))
+                    );
                 };
 
                 return $this->withReadPreference($collection, $closure);
@@ -376,7 +386,7 @@ class Query implements IteratorAggregate
      * array. The Cursor may also be wrapped with an EagerCursor.
      *
      * @param Cursor $cursor
-     * @return Cursor|EagerCursor
+     * @return CursorInterface
      */
     protected function prepareCursor(Cursor $cursor)
     {
@@ -388,7 +398,7 @@ class Query implements IteratorAggregate
             $cursor->setReadPreference($this->query['readPreference'], $this->query['readPreferenceTags']);
         }
 
-        foreach ($this->getQueryOptions('hint', 'immortal', 'limit', 'skip', 'slaveOkay', 'sort') as $key => $value) {
+        foreach ($this->getQueryOptions('hint', 'immortal', 'limit', 'maxTimeMS', 'skip', 'slaveOkay', 'sort') as $key => $value) {
             $cursor->$key($value);
         }
 
@@ -398,6 +408,10 @@ class Query implements IteratorAggregate
 
         if ( ! empty($this->query['eagerCursor'])) {
             $cursor = new EagerCursor($cursor);
+        }
+
+        if (isset($this->query['useIdentifierKeys'])) {
+            $cursor->setUseIdentifierKeys($this->query['useIdentifierKeys']);
         }
 
         return $cursor;
@@ -415,6 +429,27 @@ class Query implements IteratorAggregate
         return array_filter(
             array_intersect_key($this->query, array_flip(func_get_args())),
             function($value) { return $value !== null; }
+        );
+    }
+
+    /**
+     * Returns an array with its keys renamed based on the translation map.
+     *
+     * @param array $options Query options
+     * @return array $rename Translation map (from => to) for renaming keys
+     */
+    private function renameQueryOptions(array $options, array $rename)
+    {
+        if (empty($options)) {
+            return $options;
+        }
+
+        return array_combine(
+            array_map(
+                function($key) use ($rename) { return isset($rename[$key]) ? $rename[$key] : $key; },
+                array_keys($options)
+            ),
+            array_values($options)
         );
     }
 

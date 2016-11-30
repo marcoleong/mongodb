@@ -19,15 +19,13 @@
 
 namespace Doctrine\MongoDB;
 
-use Doctrine\MongoDB\Util\ReadPreference;
-
 /**
  * Wrapper for the PHP MongoCursor class.
  *
  * @since  1.0
  * @author Jonathan H. Wage <jonwage@gmail.com>
  */
-class Cursor implements Iterator
+class Cursor implements CursorInterface
 {
     /**
      * The Collection instance used for recreating this cursor.
@@ -53,13 +51,24 @@ class Cursor implements Iterator
      */
     protected $numRetries;
 
-    protected $query = array();
-    protected $fields = array();
+    /**
+     * Whether to use the document's "_id" value as its iteration key.
+     *
+     * If false, the position of the document in the result set will be reported
+     * instead. This is useful for documents that have non-scalar IDs.
+     *
+     * @var boolean
+     */
+    protected $useIdentifierKeys = true;
+
+    protected $query = [];
+    protected $fields = [];
     protected $hint;
     protected $immortal;
-    protected $options = array();
+    protected $options = [];
     protected $batchSize;
     protected $limit;
+    protected $maxTimeMS;
     protected $readPreference;
     protected $readPreferenceTags;
     protected $skip;
@@ -80,7 +89,7 @@ class Cursor implements Iterator
      * @param array        $fields      Selected fields (projection)
      * @param integer      $numRetries  Number of times to retry queries
      */
-    public function __construct(Collection $collection, \MongoCursor $mongoCursor, array $query = array(), array $fields = array(), $numRetries = 0)
+    public function __construct(Collection $collection, \MongoCursor $mongoCursor, array $query = [], array $fields = [], $numRetries = 0)
     {
         $this->collection = $collection;
         $this->mongoCursor = $mongoCursor;
@@ -95,7 +104,7 @@ class Cursor implements Iterator
      * @see http://php.net/manual/en/mongocursor.addoption.php
      * @param string $key
      * @param mixed $value
-     * @return self
+     * @return $this
      */
     public function addOption($key, $value)
     {
@@ -109,7 +118,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.batchsize.php
      * @param integer $num
-     * @return self
+     * @return $this
      */
     public function batchSize($num)
     {
@@ -181,8 +190,10 @@ class Cursor implements Iterator
     /**
      * Wrapper method for MongoCursor::fields().
      *
+     * @param array $f Fields to return (or not return).
+     *
      * @see http://php.net/manual/en/mongocursor.fields.php
-     * @return self
+     * @return $this
      */
     public function fields(array $f)
     {
@@ -279,7 +290,7 @@ class Cursor implements Iterator
      * @see http://php.net/manual/en/mongocursor.setreadpreference.php
      * @param string $readPreference
      * @param array  $tags
-     * @return self
+     * @return $this
      */
     public function setReadPreference($readPreference, array $tags = null)
     {
@@ -307,12 +318,44 @@ class Cursor implements Iterator
     public function getSingleResult()
     {
         $originalLimit = $this->limit;
+        $originalUseIdentifierKeys = $this->useIdentifierKeys;
+
         $this->reset();
         $this->limit(1);
-        $result = current($this->toArray(false)) ?: null;
+        $this->setUseIdentifierKeys(false);
+
+        $result = current($this->toArray()) ?: null;
+
         $this->reset();
         $this->limit($originalLimit);
+        $this->setUseIdentifierKeys($originalUseIdentifierKeys);
+
         return $result;
+    }
+
+    /**
+     * Return whether the document's "_id" value is used as its iteration key.
+     *
+     * @since 1.2
+     * @return boolean
+     */
+    public function getUseIdentifierKeys()
+    {
+        return $this->useIdentifierKeys;
+    }
+
+    /**
+     * Set whether to use the document's "_id" value as its iteration key.
+     *
+     * @since 1.2
+     * @param boolean $useIdentifierKeys
+     * @return $this
+     */
+    public function setUseIdentifierKeys($useIdentifierKeys)
+    {
+        $this->useIdentifierKeys = (boolean) $useIdentifierKeys;
+
+        return $this;
     }
 
     /**
@@ -334,7 +377,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.hint.php
      * @param array|string $keyPattern
-     * @return self
+     * @return $this
      */
     public function hint($keyPattern)
     {
@@ -348,7 +391,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.immortal.php
      * @param boolean $liveForever
-     * @return self
+     * @return $this
      */
     public function immortal($liveForever = true)
     {
@@ -374,10 +417,17 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/iterator.key.php
      * @see http://php.net/manual/en/mongocursor.key.php
-     * @return string
+     * @return mixed
      */
     public function key()
     {
+        // TODO: Track position internally to avoid repeated info() calls
+        if ( ! $this->useIdentifierKeys) {
+            $info = $this->mongoCursor->info();
+
+            return isset($info['at']) ? $info['at'] : null;
+        }
+
         return $this->mongoCursor->key();
     }
 
@@ -386,13 +436,27 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.limit.php
      * @param integer $num
-     * @return self
+     * @return $this
      */
     public function limit($num)
     {
         $num = (integer) $num;
         $this->limit = $num;
         $this->mongoCursor->limit($num);
+        return $this;
+    }
+
+    /**
+     * Wrapper method for MongoCursor::maxTimeMS().
+     *
+     * @see http://php.net/manual/en/mongocursor.maxtimems.php
+     * @param integer $ms
+     * @return $this
+     */
+    public function maxTimeMS($ms)
+    {
+        $this->maxTimeMS = (integer) $ms;
+        $this->mongoCursor->maxTimeMS($this->maxTimeMS);
         return $this;
     }
 
@@ -406,7 +470,7 @@ class Cursor implements Iterator
     {
         $cursor = $this;
         $this->retry(function() use ($cursor) {
-            return $cursor->getMongoCursor()->next();
+            $cursor->getMongoCursor()->next();
         }, false);
     }
 
@@ -430,6 +494,9 @@ class Cursor implements Iterator
         }
         if ($this->limit !== null) {
             $this->mongoCursor->limit($this->limit);
+        }
+        if ($this->maxTimeMS !== null) {
+            $this->mongoCursor->maxTimeMS($this->maxTimeMS);
         }
         if ($this->skip !== null) {
             $this->mongoCursor->skip($this->skip);
@@ -480,7 +547,7 @@ class Cursor implements Iterator
     {
         $cursor = $this;
         $this->retry(function() use ($cursor) {
-            return $cursor->getMongoCursor()->rewind();
+            $cursor->getMongoCursor()->rewind();
         }, false);
     }
 
@@ -496,23 +563,10 @@ class Cursor implements Iterator
      */
     public function setMongoCursorSlaveOkay($ok)
     {
-        if (version_compare(phpversion('mongo'), '1.3.0', '<')) {
-            $this->mongoCursor->slaveOkay($ok);
-            return;
-        }
-
-        /* MongoCursor::setReadPreference() may not exist until 1.4.0. Although
-         * we could throw an exception here, it's more user-friendly to NOP.
-         */
-        if (!method_exists($this->mongoCursor, 'setReadPreference')) {
-            return;
-        }
-
         if ($ok) {
             // Preserve existing tags for non-primary read preferences
             $readPref = $this->mongoCursor->getReadPreference();
-            $tags = !empty($readPref['tagsets']) ? ReadPreference::convertTagSets($readPref['tagsets']) : array();
-            $this->mongoCursor->setReadPreference(\MongoClient::RP_SECONDARY_PREFERRED, $tags);
+            $this->mongoCursor->setReadPreference(\MongoClient::RP_SECONDARY_PREFERRED, isset($readPref['tagsets']) ? $readPref['tagsets'] : []);
         } else {
             $this->mongoCursor->setReadPreference(\MongoClient::RP_PRIMARY);
         }
@@ -523,7 +577,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.skip.php
      * @param integer $num
-     * @return self
+     * @return $this
      */
     public function skip($num)
     {
@@ -538,7 +592,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.slaveokay.php
      * @param boolean $ok
-     * @return self
+     * @return $this
      */
     public function slaveOkay($ok = true)
     {
@@ -552,7 +606,7 @@ class Cursor implements Iterator
      * Wrapper method for MongoCursor::snapshot().
      *
      * @see http://php.net/manual/en/mongocursor.snapshot.php
-     * @return self
+     * @return $this
      */
     public function snapshot()
     {
@@ -566,7 +620,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.sort.php
      * @param array $fields
-     * @return self
+     * @return $this
      */
     public function sort($fields)
     {
@@ -589,7 +643,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.tailable.php
      * @param boolean $tail
-     * @return self
+     * @return $this
      */
     public function tailable($tail = true)
     {
@@ -604,7 +658,7 @@ class Cursor implements Iterator
      *
      * @see http://php.net/manual/en/mongocursor.timeout.php
      * @param integer $ms
-     * @return self
+     * @return $this
      */
     public function timeout($ms)
     {
@@ -616,20 +670,29 @@ class Cursor implements Iterator
     /**
      * Return the cursor's results as an array.
      *
-     * If documents in the result set use BSON objects for their "_id", the
-     * $useKeys parameter may be set to false to avoid errors attempting to cast
-     * arrays (i.e. BSON objects) to string keys.
-     *
      * @see Iterator::toArray()
-     * @param boolean $useKeys
+     * @param boolean $useIdentifierKeys Deprecated since 1.2; will be removed in 2.0
      * @return array
      */
-    public function toArray($useKeys = true)
+    public function toArray($useIdentifierKeys = null)
     {
+        $originalUseIdentifierKeys = $this->useIdentifierKeys;
+        $useIdentifierKeys = isset($useIdentifierKeys) ? (boolean) $useIdentifierKeys : $this->useIdentifierKeys;
         $cursor = $this;
-        return $this->retry(function() use ($cursor, $useKeys) {
-            return iterator_to_array($cursor, $useKeys);
+
+        /* Let iterator_to_array() decide to use keys or not. This will avoid
+         * superfluous MongoCursor::info() from the key() method until the
+         * cursor position is tracked internally.
+         */
+        $this->useIdentifierKeys = true;
+
+        $results = $this->retry(function() use ($cursor, $useIdentifierKeys) {
+            return iterator_to_array($cursor, $useIdentifierKeys);
         }, true);
+
+        $this->useIdentifierKeys = $originalUseIdentifierKeys;
+
+        return $results;
     }
 
     /**

@@ -21,7 +21,6 @@ namespace Doctrine\MongoDB;
 
 use Doctrine\Common\EventManager;
 use Doctrine\MongoDB\Event\EventArgs;
-use Doctrine\MongoDB\Util\ReadPreference;
 
 /**
  * Wrapper for the MongoClient class.
@@ -50,7 +49,14 @@ class Connection
      *
      * @var array
      */
-    protected $options = array();
+    protected $options = [];
+
+    /**
+     * Driver options used to construct the MongoClient instance (optional).
+     *
+     * @var array
+     */
+    protected $driverOptions = [];
 
     /**
      * The Configuration for this connection.
@@ -72,18 +78,20 @@ class Connection
      * If $server is an existing MongoClient instance, the $options parameter
      * will not be used.
      *
-     * @param string|\MongoClient $server  Server string or MongoClient instance
-     * @param array               $options MongoClient constructor options
-     * @param Configuration       $config  Configuration instance
-     * @param EventManager        $evm     EventManager instance
+     * @param string|\MongoClient $server        Server string or MongoClient instance
+     * @param array               $options       MongoClient constructor options
+     * @param Configuration       $config        Configuration instance
+     * @param EventManager        $evm           EventManager instance
+     * @param array               $driverOptions MongoClient constructor options
      */
-    public function __construct($server = null, array $options = array(), Configuration $config = null, EventManager $evm = null)
+    public function __construct($server = null, array $options = [], Configuration $config = null, EventManager $evm = null, array $driverOptions = [])
     {
         if ($server instanceof \MongoClient || $server instanceof \Mongo) {
             $this->mongoClient = $server;
         } else {
             $this->server = $server;
             $this->options = $options;
+            $this->driverOptions = $driverOptions;
         }
         $this->config = $config ? $config : new Configuration();
         $this->eventManager = $evm ? $evm : new EventManager();
@@ -211,7 +219,7 @@ class Connection
     public function getReadPreference()
     {
         $this->initialize();
-        return ReadPreference::convertReadPreference($this->mongoClient->getReadPreference());
+        return $this->mongoClient->getReadPreference();
     }
 
     /**
@@ -280,9 +288,7 @@ class Connection
         $options = isset($options['wTimeout']) ? $this->convertWriteTimeout($options) : $options;
 
         $this->mongoClient = $this->retry(function() use ($server, $options) {
-            return version_compare(phpversion('mongo'), '1.3.0', '<')
-                ? new \Mongo($server, $options)
-                : new \MongoClient($server, $options);
+            return new \MongoClient($server, $options, $this->driverOptions);
         });
 
         if ($this->eventManager->hasListeners(Events::postConnect)) {
@@ -301,7 +307,7 @@ class Connection
             return false;
         }
 
-        return $this->mongoClient->connected;
+        return count($this->mongoClient->getHosts()) > 0;
     }
 
     /**
@@ -324,7 +330,7 @@ class Connection
     public function log(array $log)
     {
         if (null !== $this->config->getLoggerCallable()) {
-            call_user_func_array($this->config->getLoggerCallable(), array($log));
+            call_user_func($this->config->getLoggerCallable(), $log);
         }
     }
 
@@ -458,10 +464,6 @@ class Connection
      */
     protected function convertConnectTimeout(array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.4.0', '<')) {
-            return $options;
-        }
-
         if (isset($options['timeout']) && ! isset($options['connectTimeoutMS'])) {
             $options['connectTimeoutMS'] = $options['timeout'];
             unset($options['timeout']);
@@ -471,8 +473,8 @@ class Connection
     }
 
     /**
-     * Converts "timeout" MongoClient constructor option to "connectTimeoutMS"
-     * for driver versions 1.4.0+.
+     * Converts "wTimeout" MongoClient constructor option to "wTimeoutMS" for
+     * driver versions 1.4.0+.
      *
      * Note: MongoClient actually allows case-insensitive option names, but
      * we'll only process the canonical version here.
@@ -482,10 +484,6 @@ class Connection
      */
     protected function convertWriteTimeout(array $options)
     {
-        if (version_compare(phpversion('mongo'), '1.4.0', '<')) {
-            return $options;
-        }
-
         if (isset($options['wTimeout']) && ! isset($options['wTimeoutMS'])) {
             $options['wTimeoutMS'] = $options['wTimeout'];
             unset($options['wTimeout']);

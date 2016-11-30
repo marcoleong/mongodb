@@ -2,7 +2,6 @@
 
 namespace Doctrine\MongoDB\Tests;
 
-use Doctrine\MongoDB\LoggableCursor;
 
 class LoggableCursorTest extends BaseTest
 {
@@ -17,12 +16,13 @@ class LoggableCursorTest extends BaseTest
 
     public function provideLoggedMethods()
     {
-        return array(
-            array('sort', array()),
-            array('skip'),
-            array('limit'),
-            array('hint', array()),
-            array('snapshot'),
-        );
+        return [
+            ['sort', []],
+            ['skip'],
+            ['limit'],
+            ['hint', []],
+            ['snapshot'],
+            ['maxTimeMS', []]
+        ];
     }
 }

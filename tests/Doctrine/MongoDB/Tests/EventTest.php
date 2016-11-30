@@ -5,7 +5,6 @@ namespace Doctrine\MongoDB\Tests;
 use Doctrine\MongoDB\Connection;
 use Doctrine\Common\EventManager;
 use PHPUnit_Framework_TestCase;
-use Mongo;
 
 class EventTest extends PHPUnit_Framework_TestCase
 {
@@ -16,7 +15,7 @@ class EventTest extends PHPUnit_Framework_TestCase
 
         $manager->addEventListener(\Doctrine\MongoDB\Events::preConnect, $listener);
 
-        $connection = new Connection(null, array(), null, $manager);
+        $connection = new Connection(null, [], null, $manager);
         $connection->initialize();
     }
 }

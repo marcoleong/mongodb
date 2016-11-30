@@ -43,7 +43,7 @@ class NearEventArgs extends BaseEventArgs
      * @param array|Point $near
      * @param array       $options
      */
-    public function __construct($invoker, array $query, $near, array $options = array())
+    public function __construct($invoker, array $query, $near, array $options = [])
     {
         $this->invoker = $invoker;
         $this->near = $near;
@@ -51,23 +51,62 @@ class NearEventArgs extends BaseEventArgs
         $this->options = $options;
     }
 
+    /**
+     * @return object
+     */
     public function getInvoker()
     {
         return $this->invoker;
     }
 
+    /**
+     * @return array
+     */
     public function getQuery()
     {
         return $this->query;
     }
 
+    /**
+     * @return array|Point
+     */
     public function getNear()
     {
         return $this->near;
     }
 
+    /**
+     * @return array
+     */
     public function getOptions()
     {
         return $this->options;
+    }
+
+    /**
+     * @param array $query
+     * @since 1.3
+     */
+    public function setQuery(array $query)
+    {
+        $this->query = $query;
+    }
+
+    /**
+     * @param $near
+     * @since 1.3
+     */
+    public function setNear($near)
+    {
+        $this->near = $near;
+    }
+
+    /**
+     * @param array $options
+     * @since 1.3
+     */
+    public function setOptions(array $options)
+    {
+        $this->options = $options;
     }
 }
